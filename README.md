@@ -32,10 +32,11 @@ Below is an example secretfile
 ```
   {
     "MY_ENV_VARIABLE":"bastion/foo",
-    "MY_OTHER_VARIABLE":"
+    "MY_OTHER_VARIABLE":"bastion/hello",
   }
 ```
 
 ## Registering a secret with vault.
-Secret-bootstrap can't help you there. Instead read this paperdoc.
+Secret-bootstrap can't help you there. Instead read this paperdoc:
+https://paper.dropbox.com/doc/Registering-a-secret-with-vault-vUzW7KNMO5RTpZiQfhqxY
 
