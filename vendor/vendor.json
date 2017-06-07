@@ -1,0 +1,49 @@
+{
+	"comment": "",
+	"ignore": "test",
+	"package": [
+		{
+			"checksumSHA1": "rJab1YdNhQooDiBWNnt7TLWPyBU=",
+			"path": "github.com/pkg/errors",
+			"revision": "c605e284fe17294bda444b34710735b29d1a9d90",
+			"revisionTime": "2017-05-05T04:36:39Z"
+		},
+		{
+			"checksumSHA1": "+QOOgnR2lVwweOme9x0osObe93Y=",
+			"path": "github.com/segmentio/events",
+			"revision": "c3226bdeccc3231978e3df1858e35e438f7ebbc2",
+			"revisionTime": "2017-06-01T02:04:18Z"
+		},
+		{
+			"checksumSHA1": "RqBfJ4hUCEwVaDLQgOPnR/ou6bk=",
+			"path": "github.com/segmentio/events/ecslogs",
+			"revision": "c3226bdeccc3231978e3df1858e35e438f7ebbc2",
+			"revisionTime": "2017-06-01T02:04:18Z"
+		},
+		{
+			"checksumSHA1": "EBZgByH3G1n3h/p0MKzIRaVKyNQ=",
+			"path": "github.com/segmentio/events/text",
+			"revision": "c3226bdeccc3231978e3df1858e35e438f7ebbc2",
+			"revisionTime": "2017-06-01T02:04:18Z"
+		},
+		{
+			"checksumSHA1": "hqm12vZzrK3ovUFspdZD5pL82Cs=",
+			"path": "github.com/segmentio/objconv",
+			"revision": "acd8f76d7843a30ad7ee28117dc1fd8c796fc578",
+			"revisionTime": "2017-05-31T22:10:16Z"
+		},
+		{
+			"checksumSHA1": "YRMBSLgLSbdW0rsFR14HYAXtrQM=",
+			"path": "github.com/segmentio/objconv/json",
+			"revision": "acd8f76d7843a30ad7ee28117dc1fd8c796fc578",
+			"revisionTime": "2017-05-31T22:10:16Z"
+		},
+		{
+			"checksumSHA1": "mhfp+6G4GStMRk2G1mjIG0mD/sI=",
+			"path": "github.com/segmentio/objconv/objutil",
+			"revision": "acd8f76d7843a30ad7ee28117dc1fd8c796fc578",
+			"revisionTime": "2017-05-31T22:10:16Z"
+		}
+	],
+	"rootPath": "github.com/segmentio/secret-bootstrap"
+}

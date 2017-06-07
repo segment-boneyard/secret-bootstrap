@@ -2,252 +2,222 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
-)
 
-const (
-	Usage     = `./secret-bootstrap secretFile`
-	VaultAddr = "http://vault.segment.local/v1"
-	Metadata  = `http://169.254.169.254/latest/dynamic/instance-identity/pkcs7`
-	IamInfo   = `http://169.254.169.254/latest/meta-data/iam/info`
-	OutName   = "secrets.sources"
+	"github.com/segmentio/events"
+	_ "github.com/segmentio/events/ecslogs"
+	_ "github.com/segmentio/events/text"
+	"github.com/segmentio/objconv/json"
 )
 
 var (
-	EnvLine = "%s=\"%s\""
+	version         string
+	vaultAddr       string
+	ec2MetadataAddr string
 )
 
-type SecretFile map[string]string
-
-type Outfile []string
-
-type VaultAuthRequest struct {
-	Role  string `json:"role"`
-	PKCS7 string `json:"pkcs7"`
-	Nonce string `json:"nonce"`
+func init() {
+	vaultAddr = getenv("SECRET_BOOTSTRAP_AUTH_VAULT_ADDR", "vault.segment.local")
+	ec2MetadataAddr = getenv("SECRET_BOOTSTRAP_EC2_METADATA_ADDR", "169.254.169.254")
 }
 
-type VaultResponse struct {
-	RequestID     string      `json:"request_id"`
-	LeaseID       string      `json:"lease_id"`
-	Renewable     bool        `json:"renewable"`
-	LeaseDuration int         `json:"lease_duration"`
-	Data          interface{} `json:"data"`
-	WrapInfo      interface{} `json:"wrap_info"`
-	Warnings      interface{} `json:"warnings"`
-	Auth          struct {
-		ClientToken string   `json:"client_token"`
-		Accessor    string   `json:"accessor"`
-		Policies    []string `json:"policies"`
-		Metadata    struct {
-			AccountID     string `json:"account_id"`
-			AmiID         string `json:"ami_id"`
-			InstanceID    string `json:"instance_id"`
-			Nonce         string `json:"nonce"`
-			Region        string `json:"region"`
-			Role          string `json:"role"`
-			RoleTagMaxTTL string `json:"role_tag_max_ttl"`
-		} `json:"metadata"`
-		LeaseDuration int  `json:"lease_duration"`
-		Renewable     bool `json:"renewable"`
-	} `json:"auth"`
-}
-
-type VaultSecretResponse struct {
-	RequestID     string `json:"request_id"`
-	LeaseID       string `json:"lease_id"`
-	Renewable     bool   `json:"renewable"`
-	LeaseDuration int    `json:"lease_duration"`
-	Data          struct {
-		Value string `json:"value"`
-	} `json:"data"`
-	WrapInfo interface{} `json:"wrap_info"`
-	Warnings interface{} `json:"warnings"`
-	Auth     interface{} `json:"auth"`
-}
-
-type InstanceProfile struct {
-	Code               string
-	LastUpdated        time.Time
-	InstanceProfileArn string
-	InstanceProfileId  string
-}
-
-func (o Outfile) String() string {
-	var (
-		leadingNewline = "\n%s"
-		noNewline      = "%s"
-	)
-	s := ""
-	for i, entry := range o {
-		tmpl := leadingNewline
-		if i == 0 {
-			tmpl = noNewline
-		}
-		s = s + fmt.Sprintf(tmpl, entry)
+func main() {
+	argv := os.Args[1:]
+	if len(argv) == 0 {
+		usage("missing IAM role name")
 	}
-	return s
+
+	role, vars, args := splitRoleVarsArgs(argv)
+	if len(args) == 0 {
+		usage("missing command to run after '--'")
+	}
+
+	path, err := exec.LookPath(args[0])
+	if err != nil {
+		fatal("%s: %s", args[0], err)
+	}
+
+	token, err := authVault()
+	if err != nil {
+		fatal("%s", err)
+	}
+
+	wg := sync.WaitGroup{}
+
+	for _, name := range vars {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			if value, err := fetchSecret(token, role, name); err != nil {
+				events.Log("error fetching secret value of %{variable}s: %{error}s", name, err)
+			} else {
+				os.Setenv(name, value)
+			}
+		}(name)
+	}
+
+	wg.Wait()
+	syscall.Exec(path, args, os.Environ())
 }
 
-func printUsageAndExit() {
-	log.Fatalf("%s\n", Usage)
+func splitRoleVarsArgs(argv []string) (role string, vars []string, args []string) {
+	role, vars = argv[0], argv[1:]
+
+	for i, v := range vars {
+		if v == "--" {
+			vars, args = vars[:i], vars[i+1:]
+			break
+		}
+	}
+
+	return
+}
+
+func authVault() (string, error) {
+	events.Log("authenticating against vault")
+
+	pkcs7, err := fetchIdentity()
+	if err != nil {
+		return "", err
+	}
+
+	role, err := fetchRole()
+	if err != nil {
+		return "", err
+	}
+
+	var authReq = struct {
+		Role  string `json:"role"`
+		PKCS7 string `json:"pkcs7"`
+		Nonce string `json:"nonce"`
+	}{
+		Role:  role,
+		PKCS7: pkcs7,
+		Nonce: "AAAAAAAAAAAAAAAAAAAAAAAAAAAA", // should we change this?
+	}
+
+	body, _ := json.Marshal(authReq)
+	req, _ := http.NewRequest("POST", "http://"+vaultAddr+"/auth/aws/login", bytes.NewReader(body))
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	var authRes struct {
+		Auth struct {
+			ClientToken string `json:"client_token"`
+		} `json:"auth"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&authRes); err != nil {
+		return "", fmt.Errorf("failed to parse the vault authentication response: %s", err)
+	}
+
+	return authRes.Auth.ClientToken, nil
 }
 
 func fetchIdentity() (string, error) {
-	resp, err := http.Get(Metadata)
+	events.Log("fetching EC2 instance PKCS7 identity from %{address}s", ec2MetadataAddr)
+
+	res, err := http.Get("http://" + ec2MetadataAddr + "/latest/dynamic/instance-identity/pkcs7")
 	if err != nil {
 		return "", err
 	}
-	buf, err := ioutil.ReadAll(resp.Body)
+
+	buf, err := ioutil.ReadAll(res.Body)
 	if err != nil {
 		return "", err
 	}
+
 	pkcs7 := string(buf)
 	pkcs7 = strings.Replace(pkcs7, "\n", "", -1)
 	return pkcs7, nil
 }
 
 func fetchRole() (string, error) {
-	var (
-		i InstanceProfile
-	)
-	resp, err := http.Get(IamInfo)
+	events.Log("fetching EC2 instance role from %{address}s", ec2MetadataAddr)
+
+	var profile struct {
+		Code               string
+		LastUpdated        time.Time
+		InstanceProfileArn string
+		InstanceProfileId  string
+	}
+
+	res, err := http.Get("http://" + ec2MetadataAddr + "/latest/meta-data/iam/info")
 	if err != nil {
 		return "", err
 	}
-	buf, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
+	defer res.Body.Close()
+
+	if err := json.NewDecoder(res.Body).Decode(&profile); err != nil {
+		return "", fmt.Errorf("failed to parse response fetching role: %s", err)
 	}
-	err = json.Unmarshal(buf, &i)
-	if err != nil {
-		return "", err
-	}
-	roleArn := i.InstanceProfileArn
+
+	roleArn := profile.InstanceProfileArn
 	arnParts := strings.Split(roleArn, "/")
+
 	if len(arnParts) != 2 {
-		return "", errors.New("Could not parse instance profile arn")
+		return "", fmt.Errorf("bad instance profile arn: %s", roleArn)
 	}
+
 	role := arnParts[1]
 	return role, nil
 }
 
-func AuthVault() (string, error) {
-	pkcs7, err := fetchIdentity()
-	if err != nil {
-		return "", err
-	}
-	role, err := fetchRole()
-	if err != nil {
-		return "", err
+func fetchSecret(token string, role string, name string) (string, error) {
+	events.Log("fetching secret value of %{variable}s from %{address}s using %{role}s role", name, vaultAddr, role)
+
+	var vault struct {
+		Data struct {
+			Value string `json:"value"`
+		} `json:"data"`
 	}
 
-	ar := &VaultAuthRequest{
-		Role:  role,
-		Nonce: "AAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-		PKCS7: pkcs7,
-	}
-	body, err := json.Marshal(ar)
+	req, _ := http.NewRequest("GET", "http://"+vaultAddr+"/v1/secret/"+role+"/"+name, nil)
+	req.Header.Add("X-Vault-Token", token)
+
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/auth/aws/login", VaultAddr), bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	v := new(VaultResponse)
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	authResponse, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
+	defer res.Body.Close()
+
+	if err := json.NewDecoder(res.Body).Decode(&vault); err != nil {
+		return "", fmt.Errorf("failed to parse response fetching %s: %s", name, err)
 	}
 
-	err = json.Unmarshal(authResponse, v)
-	if err != nil {
-		return "", err
+	if len(vault.Data.Value) == 0 {
+		return "", fmt.Errorf("no secret found in vault response for %s", name)
 	}
-	return v.Auth.ClientToken, nil
+
+	return vault.Data.Value, nil
 }
 
-func fetchSecret(name, tok string) (string, error) {
-	var (
-		client = &http.Client{}
-		v      VaultSecretResponse
-	)
-	req, err := http.NewRequest("GET", fmt.Sprintf("http://vault.segment.local/v1/secret/%s", name), nil)
-	if err != nil {
-		return "", err
+func getenv(name string, defval string) string {
+	value := os.Getenv(name)
+	if len(value) == 0 {
+		value = defval
 	}
-	req.Header.Add("X-Vault-Token", tok)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	buf, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	err = json.Unmarshal(buf, &v)
-	if err != nil {
-		return "", err
-	}
-	if len(v.Data.Value) == 0 {
-		return "", errors.New("Could not fetch secret. No secret found in vault response")
-	}
-	return v.Data.Value, nil
+	return value
 }
 
-func FetchSecrets(s SecretFile) (Outfile, error) {
-	var (
-		o Outfile
-	)
-	tok, err := AuthVault()
-	if err != nil {
-		log.Fatalf("Could not fetch vault auth token.")
-	}
-
-	for envName, vaultName := range s {
-		secret, err := fetchSecret(vaultName, tok)
-		// If we are missing a single secret it is fatal. An application may start
-		// normally and have unexpected behavior if it is missing one of its secrets.
-		if err != nil {
-			log.Fatalf("Could not fetch secret %s: %s", vaultName, err)
-		}
-		s := fmt.Sprintf(EnvLine, envName, secret)
-		o = append(o, s)
-	}
-	return o, nil
+func usage(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "Usage:\n\tsecret-bootstrap [options...] role [vars...] -- command...\nError:\n\t"+format+"\n", args...)
+	os.Exit(1)
 }
 
-func main() {
-	var (
-		s SecretFile
-	)
-	flag.Parse()
-	args := flag.Args()
-	if len(args) != 1 {
-		printUsageAndExit()
-	}
-
-	buf, err := ioutil.ReadFile(args[0])
-	if err != nil {
-		log.Fatalf("Could not read secret file %s: %s", args[0], err)
-	}
-
-	err = json.Unmarshal(buf, &s)
-	if err != nil {
-		log.Fatalf("Could not parse secret file %s: %s", args[0], err)
-	}
-	outfile, err := FetchSecrets(s)
-	ioutil.WriteFile(OutName, []byte(outfile.String()), 0444)
+func fatal(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "Error:\n\t"+format+"\n", args...)
+	os.Exit(1)
 }
