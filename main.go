@@ -56,11 +56,14 @@ func main() {
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
-			if value, err := fetchSecret(token, role, name); err != nil {
+			value, err := fetchSecret(token, role, name)
+			if err != nil {
 				events.Log("error fetching secret value of %{variable}s: %{error}s", name, err)
-			} else {
-				os.Setenv(name, value)
 			}
+			// On error this will set the environment variable to an empty value,
+			// otherwise the program won't be able to tell if it should use a
+			// default value it may have, or if something went wrong.
+			os.Setenv(name, value)
 		}(name)
 	}
 
