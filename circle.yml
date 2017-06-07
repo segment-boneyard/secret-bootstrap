@@ -4,11 +4,6 @@ machine:
   services:
     - docker
 
-dependencies:
-  override:
-    - sudo gem install --no-ri --no-rdoc fpm
-    - sudo gem install package_cloud
-
 test:
   override:
     - >
@@ -25,15 +20,3 @@ test:
       --workdir /go/src/github.com/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}
       segment/golang:latest
       go.build="CGO_ENABLED=0 go build"
-
-deployment:
-  release:
-    tag: /[0-9]+(\.[0-9]+)*/
-    commands:
-      - fpm -s dir -t deb -n secret-bootstrap -v ${CIRCLE_TAG} secret-bootstrap=/usr/local/bin/secret-bootstrap
-      - package_cloud push segment/secret-bootstrap/ubuntu/xenial secret-bootstrap_${CIRCLE_TAG}_amd64.deb
-      - package_cloud push segment/secret-bootstrap/ubuntu/yakkety secret-bootstrap_${CIRCLE_TAG}_amd64.deb
-      - package_cloud push segment/secret-bootstrap/debian/wheezy secret-bootstrap_${CIRCLE_TAG}_amd64.deb
-      - package_cloud push segment/secret-bootstrap/debian/jessie secret-bootstrap_${CIRCLE_TAG}_amd64.deb
-      - package_cloud push segment/secret-bootstrap/debian/stretch secret-bootstrap_${CIRCLE_TAG}_amd64.deb
-      - package_cloud push segment/secret-bootstrap/debian/buster secret-bootstrap_${CIRCLE_TAG}_amd64.deb
