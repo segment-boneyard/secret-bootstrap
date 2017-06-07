@@ -19,7 +19,6 @@ import (
 )
 
 var (
-	version         string
 	vaultAddr       string
 	ec2MetadataAddr string
 )
