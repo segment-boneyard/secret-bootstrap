@@ -202,6 +202,7 @@ func fetchSecret(name, tok string) (string, error) {
 		return "", err
 	}
 	if len(v.Data.Value) == 0 {
+		log.Println(string(buf))
 		return "", errors.New("Could not fetch secret. No secret found in vault response")
 	}
 	return v.Data.Value, nil
