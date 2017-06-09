@@ -1,11 +1,11 @@
 package main
 
 import (
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -45,7 +45,10 @@ func printUsageAndExit() {
 	log.Fatalf("%s\n", Usage)
 }
 
-func FetchSecrets(s SecretFile) (Outfile, error) {
+func FetchSecrets(s SecretFile) (string, error) {
+	var (
+		secret string
+	)
 	sess := session.Must(session.NewSession())
 	svc := ssm.New(sess, &aws.Config{Region: aws.String("us-west-2")})
 	i := &ssm.GetParametersInput{
@@ -53,10 +56,21 @@ func FetchSecrets(s SecretFile) (Outfile, error) {
 		WithDecryption: aws.Bool(true),
 	}
 	o, err := svc.GetParameters(i)
-	fmt.Println(err)
-	fmt.Println(o)
+	if err != nil {
+		return "", err
+	}
+	if len(o.InvalidParameters) != 0 {
+		return "", errors.New("parameter_store_missing_parameter")
+	}
+	for _, param := range o.Parameters {
+		sp := strings.Split(*param.Name, ".")
+		if len(sp) != 2 {
+			return "", errors.New("parameter_store_invalid_parameter")
+		}
 
-	return nil, nil
+		secret = fmt.Sprintf("%s %s=%s", secret, sp[1], *param.Value)
+	}
+	return secret, nil
 }
 
 func main() {
@@ -65,19 +79,17 @@ func main() {
 	)
 	flag.Parse()
 	args := flag.Args()
-	if len(args) != 1 {
+	if len(args) < 1 {
 		printUsageAndExit()
 	}
 
-	buf, err := ioutil.ReadFile(args[0])
-	if err != nil {
-		log.Fatalf("Could not read secret file %s: %s", args[0], err)
+	for i, _ := range args {
+		s = append(s, &args[i])
 	}
 
-	err = json.Unmarshal(buf, &s)
+	envs, err := FetchSecrets(s)
 	if err != nil {
-		log.Fatalf("Could not parse secret file %s: %s", args[0], err)
+		log.Fatalf("Could not fetch secrets: %s", err)
 	}
-	outfile, err := FetchSecrets(s)
-	ioutil.WriteFile(OutName, []byte(outfile.String()), 0444)
+	fmt.Println(envs)
 }
