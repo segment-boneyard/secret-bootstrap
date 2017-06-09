@@ -16,16 +16,6 @@ import (
 	_ "github.com/segmentio/events/text"
 )
 
-var (
-	vaultAddr       string
-	ec2MetadataAddr string
-)
-
-func init() {
-	vaultAddr = getenv("SECRET_BOOTSTRAP_AUTH_VAULT_ADDR", "vault.segment.local")
-	ec2MetadataAddr = getenv("SECRET_BOOTSTRAP_EC2_METADATA_ADDR", "169.254.169.254")
-}
-
 func main() {
 	argv := os.Args[1:]
 	if len(argv) == 0 {
