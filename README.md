@@ -29,7 +29,3 @@ as environment variables.
 `secret-bootsrap` has set.
 
 ## Registering a secret with vault.
-
-Secret-bootstrap can't help you there. Instead read this paperdoc:
-https://paper.dropbox.com/doc/Registering-a-secret-with-vault-vUzW7KNMO5RTpZiQfhqxY
-
