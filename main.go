@@ -1,21 +1,19 @@
 package main
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"syscall"
-	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ssm"
 	"github.com/segmentio/events"
 	_ "github.com/segmentio/events/ecslogs"
 	_ "github.com/segmentio/events/text"
-	"github.com/segmentio/objconv/json"
 )
 
 var (
@@ -44,18 +42,13 @@ func main() {
 		fatal("%s: %s", args[0], err)
 	}
 
-	token, err := authVault()
-	if err != nil {
-		fatal("%s", err)
-	}
-
 	wg := sync.WaitGroup{}
 
 	for _, name := range vars {
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
-			value, err := fetchSecret(token, role, name)
+			value, err := fetchSecret(role, name)
 			if err != nil {
 				events.Log("error fetching secret value of %{variable}s: %{error}s", name, err)
 			}
@@ -83,127 +76,25 @@ func splitRoleVarsArgs(argv []string) (role string, vars []string, args []string
 	return
 }
 
-func authVault() (string, error) {
-	events.Log("authenticating against vault")
-
-	pkcs7, err := fetchIdentity()
+func fetchSecret(role string, name string) (string, error) {
+	secret := fmt.Sprintf("%s.%s", role, name)
+	sess := session.Must(session.NewSession())
+	svc := ssm.New(sess, &aws.Config{Region: aws.String("us-west-2")})
+	i := &ssm.GetParametersInput{
+		Names:          []*string{&secret},
+		WithDecryption: aws.Bool(true),
+	}
+	o, err := svc.GetParameters(i)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Could not get parameters: %s", err)
 	}
-
-	role, err := fetchRole()
-	if err != nil {
-		return "", err
+	if len(o.InvalidParameters) != 0 {
+		return "", errors.New("Invalid paramter found")
 	}
-
-	var authReq = struct {
-		Role  string `json:"role"`
-		PKCS7 string `json:"pkcs7"`
-		Nonce string `json:"nonce"`
-	}{
-		Role:  role,
-		PKCS7: pkcs7,
-		Nonce: "AAAAAAAAAAAAAAAAAAAAAAAAAAAA", // should we change this?
+	if len(o.Parameters) != 1 {
+		return "", errors.New("Invalid number of returned paramters")
 	}
-
-	body, _ := json.Marshal(authReq)
-	req, _ := http.NewRequest("POST", "http://"+vaultAddr+"/auth/aws/login", bytes.NewReader(body))
-
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-
-	var authRes struct {
-		Auth struct {
-			ClientToken string `json:"client_token"`
-		} `json:"auth"`
-	}
-
-	if err := json.NewDecoder(res.Body).Decode(&authRes); err != nil {
-		return "", fmt.Errorf("failed to parse the vault authentication response: %s", err)
-	}
-
-	return authRes.Auth.ClientToken, nil
-}
-
-func fetchIdentity() (string, error) {
-	events.Log("fetching EC2 instance PKCS7 identity from %{address}s", ec2MetadataAddr)
-
-	res, err := http.Get("http://" + ec2MetadataAddr + "/latest/dynamic/instance-identity/pkcs7")
-	if err != nil {
-		return "", err
-	}
-
-	buf, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return "", err
-	}
-
-	pkcs7 := string(buf)
-	pkcs7 = strings.Replace(pkcs7, "\n", "", -1)
-	return pkcs7, nil
-}
-
-func fetchRole() (string, error) {
-	events.Log("fetching EC2 instance role from %{address}s", ec2MetadataAddr)
-
-	var profile struct {
-		Code               string
-		LastUpdated        time.Time
-		InstanceProfileArn string
-		InstanceProfileId  string
-	}
-
-	res, err := http.Get("http://" + ec2MetadataAddr + "/latest/meta-data/iam/info")
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-
-	if err := json.NewDecoder(res.Body).Decode(&profile); err != nil {
-		return "", fmt.Errorf("failed to parse response fetching role: %s", err)
-	}
-
-	roleArn := profile.InstanceProfileArn
-	arnParts := strings.Split(roleArn, "/")
-
-	if len(arnParts) != 2 {
-		return "", fmt.Errorf("bad instance profile arn: %s", roleArn)
-	}
-
-	role := arnParts[1]
-	return role, nil
-}
-
-func fetchSecret(token string, role string, name string) (string, error) {
-	events.Log("fetching secret value of %{variable}s from %{address}s using %{role}s role", name, vaultAddr, role)
-
-	var vault struct {
-		Data struct {
-			Value string `json:"value"`
-		} `json:"data"`
-	}
-
-	req, _ := http.NewRequest("GET", "http://"+vaultAddr+"/v1/secret/"+role+"/"+name, nil)
-	req.Header.Add("X-Vault-Token", token)
-
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-
-	if err := json.NewDecoder(res.Body).Decode(&vault); err != nil {
-		return "", fmt.Errorf("failed to parse response fetching %s: %s", name, err)
-	}
-
-	if len(vault.Data.Value) == 0 {
-		return "", fmt.Errorf("no secret found in vault response for %s", name)
-	}
-
-	return vault.Data.Value, nil
+	return *o.Parameters[0].Value, nil
 }
 
 func getenv(name string, defval string) string {
