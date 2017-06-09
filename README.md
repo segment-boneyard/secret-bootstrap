@@ -7,7 +7,7 @@ Running the program is very easy once the source code is built.
 
 The entire secret-bootstrap process when successful is a single command
 ```
-  $ ./secret-bootstrap iam-role.YOUR_FIRST_VARIABLE iam-role.YOUR_SECOND_VARIABLE
+  $ ./secret-bootstrap <iam-role> YOUR_FIRST_VARIABLE YOUR_SECOND_VARIABLE
  YOUR_FIRST_VARIABLE=heyyyyy YOUR_SECOND_VARIABLE=heyyysecond
 
 ```
@@ -23,8 +23,9 @@ Fetching and building the application is done easily with `go get`
 secret-bootstrap is a small enough program to explain the entire secret
 bootstrapping process in a short paragraph!
 
-Each command line arg given to secret-bootstrap is sent to the secure parameter
-store provided by AWS.
+The first argument to your program is the IAM role that your program is assuming
+the role off. All arguments after the role are variables that are loaded from
+the secure parameter store.
 
 The result from the secure parameter store is then printed to the command line
 with the role information stripped from it.

@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	Usage   = `./secret-bootstrap secretFile`
+	Usage   = `./secret-bootstrap <iam_role> <SECRET_NAMEs...>`
 	OutName = "secrets.sources"
 )
 
@@ -79,12 +79,18 @@ func main() {
 	)
 	flag.Parse()
 	args := flag.Args()
-	if len(args) < 1 {
+	if len(args) < 2 {
 		printUsageAndExit()
 	}
 
+	role := ""
 	for i, _ := range args {
-		s = append(s, &args[i])
+		if i == 0 {
+			role = args[i]
+			continue
+		}
+		fullArg := fmt.Sprintf("%s.%s", role, args[i])
+		s = append(s, &fullArg)
 	}
 
 	envs, err := FetchSecrets(s)
