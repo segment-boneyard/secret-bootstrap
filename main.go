@@ -1,254 +1,116 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io/ioutil"
-	"log"
-	"net/http"
-	"strings"
-	"time"
-)
+	"os"
+	"os/exec"
+	"sync"
+	"syscall"
 
-const (
-	Usage     = `./secret-bootstrap secretFile`
-	VaultAddr = "http://vault.segment.local/v1"
-	Metadata  = `http://169.254.169.254/latest/dynamic/instance-identity/pkcs7`
-	IamInfo   = `http://169.254.169.254/latest/meta-data/iam/info`
-	OutName   = "secrets.sources"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ssm"
+	"github.com/segmentio/events"
+	_ "github.com/segmentio/events/ecslogs"
+	_ "github.com/segmentio/events/text"
 )
 
 var (
-	EnvLine = "%s=\"%s\""
+	vaultAddr       string
+	ec2MetadataAddr string
 )
 
-type SecretFile map[string]string
-
-type Outfile []string
-
-type VaultAuthRequest struct {
-	Role  string `json:"role"`
-	PKCS7 string `json:"pkcs7"`
-	Nonce string `json:"nonce"`
-}
-
-type VaultResponse struct {
-	RequestID     string      `json:"request_id"`
-	LeaseID       string      `json:"lease_id"`
-	Renewable     bool        `json:"renewable"`
-	LeaseDuration int         `json:"lease_duration"`
-	Data          interface{} `json:"data"`
-	WrapInfo      interface{} `json:"wrap_info"`
-	Warnings      interface{} `json:"warnings"`
-	Auth          struct {
-		ClientToken string   `json:"client_token"`
-		Accessor    string   `json:"accessor"`
-		Policies    []string `json:"policies"`
-		Metadata    struct {
-			AccountID     string `json:"account_id"`
-			AmiID         string `json:"ami_id"`
-			InstanceID    string `json:"instance_id"`
-			Nonce         string `json:"nonce"`
-			Region        string `json:"region"`
-			Role          string `json:"role"`
-			RoleTagMaxTTL string `json:"role_tag_max_ttl"`
-		} `json:"metadata"`
-		LeaseDuration int  `json:"lease_duration"`
-		Renewable     bool `json:"renewable"`
-	} `json:"auth"`
-}
-
-type VaultSecretResponse struct {
-	RequestID     string `json:"request_id"`
-	LeaseID       string `json:"lease_id"`
-	Renewable     bool   `json:"renewable"`
-	LeaseDuration int    `json:"lease_duration"`
-	Data          struct {
-		Value string `json:"value"`
-	} `json:"data"`
-	WrapInfo interface{} `json:"wrap_info"`
-	Warnings interface{} `json:"warnings"`
-	Auth     interface{} `json:"auth"`
-}
-
-type InstanceProfile struct {
-	Code               string
-	LastUpdated        time.Time
-	InstanceProfileArn string
-	InstanceProfileId  string
-}
-
-func (o Outfile) String() string {
-	var (
-		leadingNewline = "\n%s"
-		noNewline      = "%s"
-	)
-	s := ""
-	for i, entry := range o {
-		tmpl := leadingNewline
-		if i == 0 {
-			tmpl = noNewline
-		}
-		s = s + fmt.Sprintf(tmpl, entry)
-	}
-	return s
-}
-
-func printUsageAndExit() {
-	log.Fatalf("%s\n", Usage)
-}
-
-func fetchIdentity() (string, error) {
-	resp, err := http.Get(Metadata)
-	if err != nil {
-		return "", err
-	}
-	buf, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	pkcs7 := string(buf)
-	pkcs7 = strings.Replace(pkcs7, "\n", "", -1)
-	return pkcs7, nil
-}
-
-func fetchRole() (string, error) {
-	var (
-		i InstanceProfile
-	)
-	resp, err := http.Get(IamInfo)
-	if err != nil {
-		return "", err
-	}
-	buf, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	err = json.Unmarshal(buf, &i)
-	if err != nil {
-		return "", err
-	}
-	roleArn := i.InstanceProfileArn
-	arnParts := strings.Split(roleArn, "/")
-	if len(arnParts) != 2 {
-		return "", errors.New("Could not parse instance profile arn")
-	}
-	role := arnParts[1]
-	return role, nil
-}
-
-func AuthVault() (string, error) {
-	pkcs7, err := fetchIdentity()
-	if err != nil {
-		return "", err
-	}
-	role, err := fetchRole()
-	if err != nil {
-		return "", err
-	}
-
-	ar := &VaultAuthRequest{
-		Role:  role,
-		Nonce: "AAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-		PKCS7: pkcs7,
-	}
-	body, err := json.Marshal(ar)
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s/auth/aws/login", VaultAddr), bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	v := new(VaultResponse)
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	authResponse, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	err = json.Unmarshal(authResponse, v)
-	if err != nil {
-		return "", err
-	}
-	return v.Auth.ClientToken, nil
-}
-
-func fetchSecret(name, tok string) (string, error) {
-	var (
-		client = &http.Client{}
-		v      VaultSecretResponse
-	)
-	req, err := http.NewRequest("GET", fmt.Sprintf("http://vault.segment.local/v1/secret/%s", name), nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Add("X-Vault-Token", tok)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	buf, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	err = json.Unmarshal(buf, &v)
-	if err != nil {
-		return "", err
-	}
-	if len(v.Data.Value) == 0 {
-		log.Println(string(buf))
-		return "", errors.New("Could not fetch secret. No secret found in vault response")
-	}
-	return v.Data.Value, nil
-}
-
-func FetchSecrets(s SecretFile) (Outfile, error) {
-	var (
-		o Outfile
-	)
-	tok, err := AuthVault()
-	if err != nil {
-		log.Fatalf("Could not fetch vault auth token.")
-	}
-
-	for envName, vaultName := range s {
-		secret, err := fetchSecret(vaultName, tok)
-		// If we are missing a single secret it is fatal. An application may start
-		// normally and have unexpected behavior if it is missing one of its secrets.
-		if err != nil {
-			log.Fatalf("Could not fetch secret %s: %s", vaultName, err)
-		}
-		s := fmt.Sprintf(EnvLine, envName, secret)
-		o = append(o, s)
-	}
-	return o, nil
+func init() {
+	vaultAddr = getenv("SECRET_BOOTSTRAP_AUTH_VAULT_ADDR", "vault.segment.local")
+	ec2MetadataAddr = getenv("SECRET_BOOTSTRAP_EC2_METADATA_ADDR", "169.254.169.254")
 }
 
 func main() {
-	var (
-		s SecretFile
-	)
-	flag.Parse()
-	args := flag.Args()
-	if len(args) != 1 {
-		printUsageAndExit()
+	argv := os.Args[1:]
+	if len(argv) == 0 {
+		usage("missing IAM role name")
 	}
 
-	buf, err := ioutil.ReadFile(args[0])
-	if err != nil {
-		log.Fatalf("Could not read secret file %s: %s", args[0], err)
+	role, vars, args := splitRoleVarsArgs(argv)
+	if len(args) == 0 {
+		usage("missing command to run after '--'")
 	}
 
-	err = json.Unmarshal(buf, &s)
+	path, err := exec.LookPath(args[0])
 	if err != nil {
-		log.Fatalf("Could not parse secret file %s: %s", args[0], err)
+		fatal("%s: %s", args[0], err)
 	}
-	outfile, err := FetchSecrets(s)
-	ioutil.WriteFile(OutName, []byte(outfile.String()), 0444)
+
+	wg := sync.WaitGroup{}
+
+	for _, name := range vars {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			value, err := fetchSecret(role, name)
+			if err != nil {
+				events.Log("error fetching secret value of %{variable}s: %{error}s", name, err)
+			}
+			// On error this will set the environment variable to an empty value,
+			// otherwise the program won't be able to tell if it should use a
+			// default value it may have, or if something went wrong.
+			os.Setenv(name, value)
+		}(name)
+	}
+
+	wg.Wait()
+	syscall.Exec(path, args, os.Environ())
+}
+
+func splitRoleVarsArgs(argv []string) (role string, vars []string, args []string) {
+	role, vars = argv[0], argv[1:]
+
+	for i, v := range vars {
+		if v == "--" {
+			vars, args = vars[:i], vars[i+1:]
+			break
+		}
+	}
+
+	return
+}
+
+func fetchSecret(role string, name string) (string, error) {
+	secret := fmt.Sprintf("%s.%s", role, name)
+	sess := session.Must(session.NewSession())
+	svc := ssm.New(sess, &aws.Config{Region: aws.String("us-west-2")})
+	i := &ssm.GetParametersInput{
+		Names:          []*string{&secret},
+		WithDecryption: aws.Bool(true),
+	}
+	o, err := svc.GetParameters(i)
+	if err != nil {
+		return "", fmt.Errorf("Could not get parameters: %s", err)
+	}
+	if len(o.InvalidParameters) != 0 {
+		return "", errors.New("Invalid paramter found")
+	}
+	if len(o.Parameters) != 1 {
+		return "", errors.New("Invalid number of returned paramters")
+	}
+	return *o.Parameters[0].Value, nil
+}
+
+func getenv(name string, defval string) string {
+	value := os.Getenv(name)
+	if len(value) == 0 {
+		value = defval
+	}
+	return value
+}
+
+func usage(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "Usage:\n\tsecret-bootstrap [options...] role [vars...] -- command...\nError:\n\t"+format+"\n", args...)
+	os.Exit(1)
+}
+
+func fatal(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "Error:\n\t"+format+"\n", args...)
+	os.Exit(1)
 }

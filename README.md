@@ -1,40 +1,31 @@
 # secret-bootstrap
-secret-bootstrap is a tool that is used to securely bootstrap an environment
-that contains secrets.
+`secret-bootstrap` is a tool that is used to securely bootstrap an environment
+that contains secrets.  
+It works in a similar fashion to [aws-vault](https://github.com/99designs/aws-vault),
+fetching secrets from Vault, setting environment variables, and replacing itself
+with the process that needs the secrets.
 
-It's important to be aware that secret-bootstrap, when successfully run, will
-write secrets to a file called `secrets.sources`.
-
-# Usage
-Running the program is very easy once the source code is built.
-
-The entire secret-bootstrap process when successful should look something like
-this:
+## Installation
+Fetching and building the application is done easily with `go get`:
 ```
-  $ ./secret-bootstrap secretfile.json
-  $ source secrets.source
-  $ ./my-perfect-app
+$ go get github.com/segmentio/secret-bootstrap
 ```
 
-## Building secret-bootstrap
-Fetching and building the application is done easily with `go get`
+## Usage
+Running the program is very easy once the source code is built:
+```
+$ secret-bootstrap <iam-role> <vars...> -- <command>
+```
 
-```
-  $ go get github.com/segmentio/secret-bootstrap
-```
+The arguments are:
 
-## Making a secretfile.json
-The secretfile format is not meant to be complex. It is a map of names of
-environment variables you wish to be set, that each map to a secret that
-is stored in vault.
+- The IAM role is supposed to be a role assumed by the ECS tasks from which
+`secret-bootstrap` is running.
 
-Below is an example secretfile
-```
-  {
-    "MY_ENV_VARIABLE":"bastion/foo",
-    "MY_OTHER_VARIABLE":"bastion/hello",
-  }
-```
+- The list of variables are supposed to be stored in Vault, which will be set
+as environment variables.
+
+- An arbitrary command to execute and which inherits the environment that
+`secret-bootsrap` has set.
 
 ## Registering a secret with vault.
-
